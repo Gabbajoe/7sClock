@@ -1,0 +1,14 @@
+{
+    "color": "#FF0000",
+    "brightness": 190,
+    "blinkDots": false,
+    "use24h": true,
+    "hideLeadingZero24h": true,
+    "autoDim": true,
+    "dimStart": 22,
+    "dimEnd": 6,
+    "timezone": "CET-1CEST,M3.5.0/2,M10.5.0/3",
+    "ntpServer": "pool.ntp.org",
+    "ntpSyncInterval": 60
+  }
+  

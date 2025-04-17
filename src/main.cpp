@@ -19,6 +19,7 @@
 #include <ArduinoJson.h>
 #include <ESP8266mDNS.h>
 #include <ArduinoOTA.h>
+#include <ESP8266SSDP.h>
 
 
 #define HOUR_PIN    D2
@@ -94,6 +95,31 @@ void loadConfig() {
 uint32_t parseColor(String hexColor) {
   hexColor.replace("#", "");
   return strtoul(hexColor.c_str(), NULL, 16);
+}
+
+int extractIntFromTag(const String& xml, const String& tag) {
+  String valueStr = extractTag(xml, tag);
+  return valueStr.length() > 0 ? valueStr.toInt() : 0;
+}
+
+String extractTag(const String& xml, const String& tag) {
+  int start = xml.indexOf("<" + tag + ">");
+  int end = xml.indexOf("</" + tag + ">");
+  if (start == -1 || end == -1 || end < start) return "";
+  start += tag.length() + 2;
+  String result = xml.substring(start, end);
+  result.trim();
+  return result;
+}
+
+void sendSoapResponse(AsyncWebServerRequest *request, const String& actionName) {
+  String body = "<?xml version=\"1.0\" encoding=\"utf-8\"?>";
+  body += "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">";
+  body += "<soap:Body>";
+  body += "<u:" + actionName + "Response xmlns:u=\"urn:schemas-upnp-org:service:ClockControl:1\"/>";
+  body += "</soap:Body>";
+  body += "</soap:Envelope>";
+  request->send(200, "text/xml", body);
 }
 
 void setupTime() {
@@ -256,7 +282,7 @@ void setupWeb() {
     String html = R"rawliteral(
       <!DOCTYPE html>
       <html><head><meta name='viewport' content='width=device-width, initial-scale=1'>
-      <meta http-equiv='refresh' content='5;url=/'><style>
+      <meta http-equiv='refresh' content='2;url=/'><style>
       body { font-family: sans-serif; background: #111; color: #fff; padding: 1em; }
       h1 { text-align: center; }
       input, select, button { width: 100%; padding: 0.5em; margin: 0.5em 0; border-radius: 5px; border: none; }
@@ -296,6 +322,134 @@ void setupWeb() {
     }
   });
 
+  server.on("/description.xml", HTTP_GET, [](AsyncWebServerRequest *request) {
+    String chipId = String(ESP.getChipId(), DEC);
+    String xml = "<?xml version=\"1.0\"?>\n";
+    xml += "<root xmlns=\"urn:schemas-upnp-org:device-1-0\">\n";
+    xml += "  <specVersion><major>1</major><minor>0</minor></specVersion>\n";
+    xml += "  <device>\n";
+    xml += "    <deviceType>urn:schemas-upnp-org:device:Basic:1</deviceType>\n";
+    xml += "    <friendlyName>7 Segement Clock</friendlyName>\n";
+    xml += "    <manufacturer>Gabbajoe</manufacturer>\n";
+    xml += "    <manufacturerURL>https://github.com/Gabbajoe</manufacturerURL>\n";
+    xml += "    <modelDescription>Smart LED Clock</modelDescription>\n";
+    xml += "    <modelName>ESP8266 7sClock</modelName>\n";
+    xml += "    <modelNumber>1.0</modelNumber>\n";
+    xml += "    <modelURL>https://github.com/Gabbajoe/7sClock</modelURL>\n";
+    xml += "    <serialNumber>" + chipId + "</serialNumber>\n";
+    xml += "    <UDN>uuid:7sclock-" + chipId + "</UDN>\n";
+    xml += "    <serviceList>\n";
+    xml += "        <service>\n";
+    xml += "          <serviceType>urn:schemas-upnp-org:service:ClockControl:1</serviceType>\n";
+    xml += "          <serviceId>urn:upnp-org:serviceId:ClockControl</serviceId>\n";
+    xml += "          <controlURL>/upnp/control</controlURL>\n";
+    xml += "          <eventSubURL>/upnp/event</eventSubURL>\n";
+    xml += "          <SCPDURL>/upnp/service-desc.xml</SCPDURL>\n";
+    xml += "      </service>\n";
+    xml += "    </serviceList>\n";
+    xml += "  </device>\n";
+    xml += "</root>\n";         
+    request->send(200, "text/xml", xml);
+  });
+
+  server.on("/upnp/service-desc.xml", HTTP_GET, [](AsyncWebServerRequest *request) {
+    String xml = R"rawliteral(<?xml version="1.0"?>
+<scpd xmlns="urn:schemas-upnp-org:service-1-0">
+  <specVersion>
+    <major>1</major>
+    <minor>0</minor>
+  </specVersion>
+  <actionList>
+    <action>
+      <name>Toggle24hFormat</name>
+    </action>
+    <action>
+      <name>ToggleLeadingZero</name>
+    </action>
+    <action>
+      <name>SetColor</name>
+      <argumentList>
+        <argument>
+          <name>Hex</name>
+          <direction>in</direction>
+          <relatedStateVariable>SegmentColor</relatedStateVariable>
+        </argument>
+      </argumentList>
+    </action>
+    <action>
+      <name>SetBrightness</name>
+      <argumentList>
+        <argument>
+          <name>Value</name>
+          <direction>in</direction>
+          <relatedStateVariable>Brightness</relatedStateVariable>
+        </argument>
+      </argumentList>
+    </action>
+    <action>
+      <name>ToggleDotBlinking</name>
+    </action>
+  </actionList>
+  <serviceStateTable>
+    <stateVariable sendEvents="no">
+      <name>SegmentColor</name>
+      <dataType>string</dataType>
+    </stateVariable>
+    <stateVariable sendEvents="no">
+      <name>Brightness</name>
+      <dataType>ui1</dataType>
+    </stateVariable>
+  </serviceStateTable>
+</scpd>
+)rawliteral";
+    request->send(200, "text/xml", xml);
+  });
+
+  server.on("/upnp/control", HTTP_POST, [](AsyncWebServerRequest *request){
+    // This will NOT be triggered because no body is passed
+  }, NULL, [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+    if (index + len != total) return;
+    String body;
+    body.reserve(len);
+    for (size_t i = 0; i < len; ++i) {
+      body += (char)data[i];
+    }
+
+    String action = request->header("SOAPACTION");
+    action.replace("\"", "");
+    Serial.println("SOAP Action: " + action);
+    Serial.println("Body:\n" + body);
+    if (action.endsWith("#ToggleDotBlinking")) {
+      config.blinkDots = !config.blinkDots;
+      saveConfig();
+      sendSoapResponse(request, "ToggleDotBlinking");
+    } else if (action.endsWith("#Toggle24hFormat")) {
+      config.use24h = !config.use24h;
+      saveConfig();
+      sendSoapResponse(request, "Toggle24hFormat");
+    } else if (action.endsWith("#ToggleLeadingZero")) {
+      config.hideLeadingZero24h = !config.hideLeadingZero24h;
+      saveConfig();
+      sendSoapResponse(request, "ToggleLeadingZero");
+    } else if (action.endsWith("#SetColor")) {
+      String hex = extractTag(body, "Hex");
+      if (hex.length() == 6 || (hex.startsWith("#") && hex.length() == 7)) {
+        config.segmentColor = hex.startsWith("#") ? hex : ("#" + hex);
+        saveConfig();
+        sendSoapResponse(request, "SetColor");
+      } else {
+        request->send(400, "text/plain", "Invalid color format");
+      }
+    
+    } else if (action.endsWith("#SetBrightness")) {
+      int brightness = extractIntFromTag(body, "Value");
+      config.brightness = constrain(brightness, 0, 255);
+      saveConfig();
+      sendSoapResponse(request, "SetBrightness");
+    } else {
+      request->send(500, "text/plain", "Unknown action");
+    }
+  });
   server.begin();
 }
 
@@ -346,6 +500,21 @@ void setup() {
 
   hourStrip.begin();
   minuteStrip.begin();
+
+  // Setup SSDP
+  SSDP.setSchemaURL("description.xml");
+  SSDP.setHTTPPort(80);
+  SSDP.setName("7 Segement Clock");
+  SSDP.setSerialNumber(ESP.getChipId());
+  SSDP.setURL("/");
+  SSDP.setModelName("ESP8266 7sClock");
+  SSDP.setModelNumber("1.0");
+  SSDP.setModelURL("https://github.com/Gabbajoe/7sClock");
+  SSDP.setManufacturer("Gabbajoe");
+  SSDP.setManufacturerURL("https://github.com/Gabbajoe");
+  SSDP.setDeviceType("urn:schemas-upnp-org:device:7SegmentClock:1");
+  SSDP.begin();
+
 
   setupWeb();
 }

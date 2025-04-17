@@ -97,11 +97,6 @@ uint32_t parseColor(String hexColor) {
   return strtoul(hexColor.c_str(), NULL, 16);
 }
 
-int extractIntFromTag(const String& xml, const String& tag) {
-  String valueStr = extractTag(xml, tag);
-  return valueStr.length() > 0 ? valueStr.toInt() : 0;
-}
-
 String extractTag(const String& xml, const String& tag) {
   int start = xml.indexOf("<" + tag + ">");
   int end = xml.indexOf("</" + tag + ">");
@@ -110,6 +105,11 @@ String extractTag(const String& xml, const String& tag) {
   String result = xml.substring(start, end);
   result.trim();
   return result;
+}
+
+int extractIntFromTag(const String& xml, const String& tag) {
+  String valueStr = extractTag(xml, tag);
+  return valueStr.length() > 0 ? valueStr.toInt() : 0;
 }
 
 void sendSoapResponse(AsyncWebServerRequest *request, const String& actionName) {
